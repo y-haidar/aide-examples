@@ -1,0 +1,151 @@
+use aide::{
+    axum::{
+        routing::{get_with, post_with, put_with},
+        ApiRouter, IntoApiResponse,
+    },
+    transform::TransformOperation,
+};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::{
+    extractors::{self, code},
+    state::AppState,
+};
+
+use super::TodoItem;
+
+pub fn todo_routes() -> ApiRouter<AppState> {
+    ApiRouter::new()
+    // .api_route(
+    //     "/",
+    //     post_with(create_todo, create_todo_docs).get_with(list_todos, list_todos_docs),
+    // )
+    // .api_route(
+    //     "/:id",
+    //     get_with(get_todo, get_todo_docs).delete_with(delete_todo, delete_todo_docs),
+    // )
+    // .api_route("/:id/complete", put_with(complete_todo, complete_todo_docs))
+    // .with_state(state)
+}
+
+/// New Todo details.
+#[derive(Deserialize, JsonSchema)]
+struct NewTodo {
+    /// The description for the new Todo.
+    description: String,
+}
+
+/// New Todo details.
+#[derive(Serialize, JsonSchema)]
+struct TodoCreated {
+    /// The ID of the new Todo.
+    id: Uuid,
+}
+
+async fn create_todo(
+    State(app): State<AppState>,
+    Json(todo): Json<NewTodo>,
+) -> impl IntoApiResponse {
+    let id = Uuid::new_v4();
+    app.todos.lock().unwrap().insert(
+        id,
+        TodoItem {
+            complete: false,
+            description: todo.description,
+            id,
+        },
+    );
+
+    extractors::Json::<{ code(201) }, _>(TodoCreated { id })
+}
+
+fn create_todo_docs(op: TransformOperation) -> TransformOperation {
+    op.description("Create a new incomplete Todo item.")
+    // .response::<201, Json<TodoCreated>>()
+}
+
+#[derive(Serialize, JsonSchema)]
+struct TodoList {
+    todo_ids: Vec<Uuid>,
+}
+
+async fn list_todos(State(app): State<AppState>) -> impl IntoApiResponse {
+    Json(TodoList {
+        todo_ids: app.todos.lock().unwrap().keys().copied().collect(),
+    })
+}
+
+fn list_todos_docs(op: TransformOperation) -> TransformOperation {
+    op.description("List all Todo items.")
+    // .response::<200, Json<TodoList>>()
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct SelectTodo {
+    /// The ID of the Todo.
+    id: Uuid,
+}
+
+async fn get_todo(
+    State(app): State<AppState>,
+    Path(todo): Path<SelectTodo>,
+) -> Result<Json<TodoItem>, extractors::Json<{ code(404) }, &'static str>> {
+    if let Some(todo) = app.todos.lock().unwrap().get(&todo.id) {
+        Ok(Json(todo.clone()))
+    } else {
+        Err(extractors::Json(""))
+    }
+}
+
+fn get_todo_docs(op: TransformOperation) -> TransformOperation {
+    op.description("Get a single Todo item.")
+    // .response_with::<200, Json<TodoItem>, _>(|res| {
+    //     res.example(TodoItem {
+    //         complete: false,
+    //         description: "fix bugs".into(),
+    //         id: Uuid::nil(),
+    //     })
+    // })
+    // .response_with::<404, (), _>(|res| res.description("todo was not found"))
+}
+
+async fn delete_todo(
+    State(app): State<AppState>,
+    Path(todo): Path<SelectTodo>,
+) -> impl IntoApiResponse {
+    if app.todos.lock().unwrap().remove(&todo.id).is_some() {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
+fn delete_todo_docs(op: TransformOperation) -> TransformOperation {
+    op.description("Delete a Todo item.")
+        .response_with::<204, (), _>(|res| res.description("The Todo has been deleted."))
+        .response_with::<404, (), _>(|res| res.description("The todo was not found"))
+}
+
+async fn complete_todo(
+    State(app): State<AppState>,
+    Path(todo): Path<SelectTodo>,
+) -> impl IntoApiResponse {
+    if let Some(todo) = app.todos.lock().unwrap().get_mut(&todo.id) {
+        todo.complete = true;
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
+fn complete_todo_docs(op: TransformOperation) -> TransformOperation {
+    op.description("Complete a Todo.").response::<204, ()>()
+}
