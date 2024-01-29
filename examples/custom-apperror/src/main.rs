@@ -7,6 +7,7 @@ use docs::docs_routes;
 use crate::{state::AppState, todos::routes::todo_routes};
 
 mod docs;
+mod err_conflict_example;
 mod error;
 mod extractors;
 mod state;
@@ -18,18 +19,14 @@ async fn main() {
     println!("{error}");
   });
 
-  aide::gen::reset_context();
-  aide::gen::extract_schemas(true);
-  aide::gen::infer_responses(true);
-
   let state = AppState::default();
   let mut api = OpenApi::default();
 
   let app = ApiRouter::new()
     .nest_api_service("/todo", todo_routes().with_state(state))
-    .nest_api_service("/docs", docs_routes())
     // .finish_api(&mut api)
     .finish_api_with(&mut api, api_docs)
+    .nest_service("/docs", docs_routes())
     .layer(Extension(Arc::new(api)));
 
   println!("Example docs are accessible at http://127.0.0.1:3001/docs");
