@@ -28,15 +28,47 @@ pub enum AppError {
   PathRejection(#[from] PathRejection),
   #[error(transparent)]
   JsonRejection(#[from] JsonRejection),
+  #[error("API Key was not provided")]
+  AuthKeyMissing,
+  #[error("API Key is not invalid")]
+  AuthKeyInvalid,
+  #[error("API Key does not have access")]
+  AuthKeyNoAccess,
+}
+
+impl AppError {
+  fn to_app_error_output(&self) -> AppErrorOutput {
+    match self {
+      AppError::Internal(error) => AppErrorOutput::new(error, None),
+      AppError::Validation(e) => {
+        // you can match on err here, but for sake of keeping it short not going to
+        AppErrorOutput::new(
+          "Validation Failed",
+          Some(unsafe { serde_json::to_value(e).unwrap_unchecked() }),
+        )
+      }
+      AppError::PathRejection(e) => {
+        AppErrorOutput::new("Incorrect Path", Some(json!(e.to_string())))
+      }
+      AppError::JsonRejection(e) => {
+        AppErrorOutput::new("Incorrect Json", Some(json!(e.to_string())))
+      }
+      AppError::AuthKeyMissing | AppError::AuthKeyInvalid | AppError::AuthKeyNoAccess => {
+        AppErrorOutput::new("Unauthorized", None)
+      }
+    }
+  }
 }
 
 impl AppErrorCode {
   pub fn status_code(&self) -> StatusCode {
     match self {
-      Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
-      Self::Validation => StatusCode::UNPROCESSABLE_ENTITY,
-      Self::PathRejection => StatusCode::BAD_REQUEST,
-      Self::JsonRejection => StatusCode::BAD_REQUEST,
+      AppErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+      AppErrorCode::Validation => StatusCode::UNPROCESSABLE_ENTITY,
+      AppErrorCode::PathRejection => StatusCode::BAD_REQUEST,
+      AppErrorCode::JsonRejection => StatusCode::BAD_REQUEST,
+      AppErrorCode::AuthKeyMissing | AppErrorCode::AuthKeyInvalid => StatusCode::UNAUTHORIZED,
+      AppErrorCode::AuthKeyNoAccess => StatusCode::FORBIDDEN,
     }
   }
 
@@ -51,73 +83,52 @@ impl AppErrorCode {
         #[derive(Validate)]
         struct Example {
           #[validate(length(min = 5))]
-          field: &'static str,
+          param1: &'static str,
+          #[validate(range(min = 18, max = 20))]
+          param2: u32,
         }
-        let ex = unsafe { Example { field: "test" }.validate().unwrap_err_unchecked() };
-        to_app_error_output(&AppError::Validation(ex))
+        let ex = unsafe {
+          Example {
+            param1: "test",
+            param2: 10,
+          }
+          .validate()
+          .unwrap_err_unchecked()
+        };
+        AppError::Validation(ex).to_app_error_output()
       }
-      AppErrorCode::PathRejection => AppErrorOutput::new("PathRejection", None),
-      AppErrorCode::JsonRejection => AppErrorOutput::new("JsonRejection", None),
+      AppErrorCode::PathRejection => AppErrorOutput::new("Incorrect Path", None),
+      AppErrorCode::JsonRejection => AppErrorOutput::new("Incorrect Json", None),
+      AppErrorCode::AuthKeyMissing
+      | AppErrorCode::AuthKeyInvalid
+      | AppErrorCode::AuthKeyNoAccess => AppErrorOutput::new("Unauthorized", None),
     }
   }
 
-  pub fn create_description(&self) -> &'static str {
+  pub fn description(&self) -> &'static str {
     match self {
       AppErrorCode::Internal => "A generic internal error",
       AppErrorCode::Validation => "A validation error",
-      AppErrorCode::PathRejection => "The path parameters were not supplied",
-      AppErrorCode::JsonRejection => "Json deserialization error",
-    }
-  }
-}
-
-fn to_app_error_output(app_error: &AppError) -> AppErrorOutput {
-  match app_error {
-    AppError::Internal(error) => AppErrorOutput::new(error, None),
-    AppError::Validation(e) => {
-      // you can match on err here, but for sake of keeping it short not going to
-      AppErrorOutput::new("Validation Failed", Some(json!({ "error": e.to_string() })))
-    }
-    AppError::PathRejection(e) => {
-      AppErrorOutput::new("Incorrect Path", Some(json!({ "error": e.to_string() })))
-    }
-    AppError::JsonRejection(e) => {
-      AppErrorOutput::new("Incorrect Json", Some(json!({ "error": e.to_string() })))
+      AppErrorCode::PathRejection => "The path parameters were not supplied correctly",
+      AppErrorCode::JsonRejection => "A json deserialization error",
+      AppErrorCode::AuthKeyInvalid
+      | AppErrorCode::AuthKeyMissing
+      | AppErrorCode::AuthKeyNoAccess => {
+        "The API Key was not provided, incorrect, or does not have access rights"
+      }
     }
   }
 }
 
 impl IntoResponse for AppError {
   fn into_response(self) -> axum::response::Response {
-    // let status = self.status;
-    // let mut res = axum::Json(self).into_response();
-    // *res.status_mut() = status;
-    // res
-
-    let json_output = axum::Json(to_app_error_output(&self));
+    let json_output = axum::Json(self.to_app_error_output());
 
     let code: AppErrorCode = self.into();
     let code = code.status_code();
     (code, json_output).into_response()
   }
 }
-
-// impl From<JsonRejection> for AppError {
-//   fn from(rejection: JsonRejection) -> Self {
-//     AppError::new(&serde_json::json!({ "error": rejection.to_string() }).to_string())
-//   }
-// }
-
-// impl From<JsonSchemaRejection> for AppError {
-//     fn from(rejection: JsonSchemaRejection) -> Self {
-//         match rejection {
-//             JsonSchemaRejection::Json(j) => Self::new(&j.to_string()),
-//             JsonSchemaRejection::Serde(_) => Self::new("invalid request"),
-//             JsonSchemaRejection::Schema(s) => Self::new("invalid request")
-//                 .with_details(serde_json::json!({ "schema_validation": s })),
-//         }
-//     }
-// }
 
 /// Error response for most API errors.
 #[derive(Debug, Serialize, JsonSchema)]
@@ -128,8 +139,6 @@ pub struct AppErrorOutput {
   pub error: String,
   /// A unique error ID.
   pub error_id: Uuid,
-  // #[serde(skip)]
-  // pub status: StatusCode,
   /// Optional Additional error details.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub error_details: Option<Value>,
@@ -155,14 +164,12 @@ impl AppErrorOutput {
 // Only needed if used as output of routes, impl might be wrong tho
 // impl aide::OperationOutput for AppError {
 //   type Inner = ();
-
 //   fn operation_response(
 //     ctx: &mut aide::gen::GenContext,
 //     operation: &mut aide::openapi::Operation,
 //   ) -> Option<aide::openapi::Response> {
 //     <axum::Json<AppErrorOutput> as aide::OperationOutput>::operation_response(ctx, operation)
 //   }
-
 //   fn inferred_responses(
 //     ctx: &mut aide::gen::GenContext,
 //     operation: &mut aide::openapi::Operation,

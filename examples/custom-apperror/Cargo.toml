@@ -7,13 +7,15 @@ edition = "2021"
 
 [dependencies]
 thiserror = "1"
-strum = "0.25"
-strum_macros = "0.25"
+strum = "0.26"
+strum_macros = "0.26"
 validator = { version = "0.16", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
+tower-service = "0.3"
 axum = { version = "0.7", features = ["ws"] }
 axum-macros = "0.4"
-axum-extra = "0.9"
+axum-extra = { version = "0.9", features = ["typed-header"] }
+headers = "0.4"
 aide = { version = "=0.13.2", features = [
     "redoc",
     "scalar",
